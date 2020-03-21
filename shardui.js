@@ -201,6 +201,11 @@
       this.canvas.style.display = "block";
     }
 
+    quit() {
+      this.canvas.remove();
+      document.oncontextmenu = null;
+    }
+
     setPos(x, y) {
       if (isNaN(x) || isNaN(y))
         throw "X and Y must be numbers";
@@ -257,7 +262,15 @@
   }
 
 
-  //
+  const selfAddressBase = "http://localhost:8000";
+  const templateSearchBase = "http://localhost:8089";
+
+  function getTemplateQueryResults(query) {
+    return axios({
+      url: templateSearchBase + "/find?query=" + query
+    })
+  }
+
   function loadScript(scriptSrc) {
     if (!(scriptSrc instanceof Array)) {
       scriptSrc = [scriptSrc];
@@ -278,13 +291,6 @@
     }))
   }
 
-  const Config = {
-    CssSelectors: {
-      "containers": ["container", "layout"],
-      "columns": ["col-1", "col",]
-    }
-  }
-
   function loadCss(scriptSrc) {
     if (!(scriptSrc instanceof Array)) {
       scriptSrc = [scriptSrc];
@@ -303,24 +309,38 @@
     }))
   }
 
+
+  const Config = {
+    CssSelectors: {
+      "containers": ["container", "layout"],
+      "columns": ["col-1", "col",]
+    }
+  };
+
   loadCss("https://stackpath.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css");
   loadScript([
     'https://unpkg.com/mithril/mithril.js',
+    'https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js',
     "https://cdn.jsdelivr.net/npm/interactjs/dist/interact.min.js"
   ]).then(function () {
+    const m = window.m;
     console.log("Mithril loaded");
     var toolbox = undefined;
     var head = document.getElementsByTagName("head")[0];
     var body = document.getElementsByTagName("body")[0];
     // alert("Loaded");
     const toolboxBackgroundColor = "#eee";
-    const m = window.m;
 
     var previousHoverTarget = undefined;
     var selectedTarget = undefined;
     var selectedTargetTagName = undefined;
     var previousTargetOriginalColor = undefined;
     var draggable = undefined;
+    var componentSelector = undefined;
+    var availableFuzzyComponents = [];
+    var availablePrefixComponents = [];
+    var availableShardsComponents = {};
+    var cssMap = {};
 
 
     function getDisplayHeight() {
@@ -337,7 +357,190 @@
       return document.documentElement.scrollTop || document.body.scrollTop;
     }
 
-    const radial = new RadialMenu({
+
+    function getDomPath(el) {
+      var stack = [];
+      while (el.parentNode != null) {
+        // console.log(el.nodeName);
+        var sibCount = 0;
+        var sibIndex = 0;
+        for (var i = 0; i < el.parentNode.childNodes.length; i++) {
+          var sib = el.parentNode.childNodes[i];
+          if (sib.nodeName === el.nodeName) {
+            if (sib === el) {
+              sibIndex = sibCount;
+            }
+            sibCount++;
+          }
+        }
+        if (el.hasAttribute('id') && el.id !== '') {
+          stack.unshift(el.nodeName.toLowerCase() + '#' + el.id);
+        } else if (sibCount > 1) {
+          stack.unshift(el.nodeName.toLowerCase());
+        } else {
+          stack.unshift(el.nodeName.toLowerCase());
+        }
+        el = el.parentNode;
+      }
+
+      const name = stack.slice(1).join(" > ");
+      const subName = name.substring(name.length > 40 ? name.length - 40 : 0, name.length);
+      return subName.substring(subName.indexOf(">")); // removes the html element
+    }
+
+    function getDomPathFullName(el) {
+      var stack = [];
+      while (el.parentNode != null) {
+        // console.log(el.nodeName);
+        var sibCount = 0;
+        var sibIndex = 0;
+        for (var i = 0; i < el.parentNode.childNodes.length; i++) {
+          var sib = el.parentNode.childNodes[i];
+          if (sib.nodeName === el.nodeName) {
+            if (sib === el) {
+              sibIndex = sibCount;
+            }
+            sibCount++;
+          }
+        }
+        if (el.hasAttribute('id') && el.id !== '') {
+          stack.unshift(el.nodeName.toLowerCase());
+        } else if (sibCount > 1) {
+          stack.unshift(el.nodeName.toLowerCase());
+        } else {
+          stack.unshift(el.nodeName.toLowerCase());
+        }
+        el = el.parentNode;
+      }
+
+      return "<" + stack.join("<"); // removes the html element
+    }
+
+    function handleRadialEvent(eventName) {
+      console.log("handle radial event", eventName);
+      switch (eventName) {
+        default:
+          console.log("no handler for radial event", eventName);
+          break;
+        case "quit":
+          body.onmousemove = null;
+          body.onscroll = null;
+          body.onclick = null;
+          if (selectedTarget && selectedTarget.tagName !== "BODY") {
+            selectedTarget.style.backgroundColor = previousTargetOriginalColor;
+            selectedTarget = null;
+          } else {
+            previousHoverTarget.style.backgroundColor = previousTargetOriginalColor;
+            previousHoverTarget = null;
+          }
+
+          toolbox.remove();
+          radial.quit();
+          radial = null;
+          toolbox = null;
+          break;
+      }
+    }
+
+    function handleToolBoxEvent(eventName, context) {
+      console.log("handle event", eventName);
+      switch (eventName) {
+        case "drag-drop":
+          break;
+        case "connect-data":
+          break;
+        case "change-component":
+          availablePrefixComponents = [];
+          availableFuzzyComponents = [];
+          availableShardsComponents = {};
+          cssMap = {};
+          console.log("get components for ", selectedTargetTagName);
+          const fullPath = getDomPathFullName(selectedTarget);
+          const fullPathParts = fullPath.split("<");
+
+          for (var i = 0; i < fullPathParts.length; i++) {
+            const subPath = "<" + fullPathParts.slice(i, fullPathParts.length).join("<");
+            console.log("Query sub path ", subPath);
+            getTemplateQueryResults(subPath).then(function (response) {
+              var prefix = response.data.prefix;
+              var fuzzy = response.data.fuzzy;
+              var shards = response.data.shards;
+              var css = response.data.css;
+              if (prefix) {
+                availablePrefixComponents.push(...prefix)
+              }
+              if (fuzzy) {
+                availableFuzzyComponents.push(...fuzzy)
+              }
+              if (css) {
+                var cssHashs = Object.keys(css);
+                for (var i = 0; i < cssHashs.length; i++) {
+                  var hash = cssHashs[i];
+                  cssMap[hash] = css[hash];
+                }
+              }
+              if (shards) {
+                const shardNames = Object.keys(shards);
+                for (var shardId in shardNames) {
+                  var tag = shardNames[shardId];
+                  const shard = response.data.shards[tag];
+                  if (!shard) {
+                    continue
+                  }
+                  availableShardsComponents[tag] = shard;
+                }
+              }
+              console.log("prefix", prefix);
+              console.log("fuzzy", fuzzy);
+              if (componentSelector) {
+                componentSelector.remove()
+              }
+              const componentSelectorBody = createComponentSelector(availablePrefixComponents, availableFuzzyComponents, availableShardsComponents, cssMap);
+
+              var d = document.createElement("div");
+              m.mount(d, componentSelectorBody);
+              console.log("Rendered", d);
+              componentSelector = d.children[0];
+
+
+              document.body.appendChild(componentSelector);
+            })
+          }
+
+
+          var results = getTemplateQueryResults(fullPath);
+          results.then(function (response) {
+            console.log("results", response)
+          });
+          break;
+        case "show-config":
+          break;
+        case "select-parent":
+          var localTarget = context.target;
+          console.log("update element", localTarget);
+          if (localTarget && localTarget.parentElement && selectedTarget.parentElement !== document.body) {
+            selectedTarget.style.backgroundColor = previousTargetOriginalColor;
+            selectedTarget = localTarget.parentElement;
+            previousTargetOriginalColor = selectedTarget.style.backgroundColor;
+            selectedTarget.style.backgroundColor = "#ddd";
+          }
+          break;
+
+        default:
+          console.log("nothing to do for ", eventName)
+      }
+    }
+
+    function onTargetSelected(target) {
+      updateToolBoxPosition(selectedTarget);
+    }
+
+    function onTargetUnselected(target) {
+
+    }
+
+
+    var radial = new RadialMenu({
       rotation: Math.PI / 2,
       fontSize: 18,
       onShow: function () {
@@ -354,28 +557,22 @@
         {
           text: '\uf1f8',
           action: function (e) {
-            console.log("Delete element")
+            console.log("Delete element");
+            handleRadialEvent("delete-element")
           }
         },
         {
           text: '\uf247',
           action: function (e) {
             console.log("Move element");
-            previousHoverTarget.style.backgroundColor = previousTargetOriginalColor;
-            selectedTarget = document.body;
-            toolbox.style.display = "none";
-
-
-            document.onkeypress = function (event) {
-              console.log("key pressed ", event);
-              // selectedTarget =
-            }
+            handleRadialEvent("quit");
           }
         },
         {
-          text: '\uf0b2',
+          text: '\uf011',
           action: function () {
-            console.log("Resize element")
+            console.log("Resize element");
+            handleRadialEvent("quit");
           }
         },
       ]
@@ -411,65 +608,10 @@
     body.onscroll = function (ev) {
       if (previousHoverTarget === ev.target || selectedTarget || ev.target.tagName === "BODY") {
         updateToolBoxPosition(selectedTarget);
-        return;
+
       }
-      return
+
     };
-
-    function getDomPath(el) {
-      var stack = [];
-      while (el.parentNode != null) {
-        // console.log(el.nodeName);
-        var sibCount = 0;
-        var sibIndex = 0;
-        for (var i = 0; i < el.parentNode.childNodes.length; i++) {
-          var sib = el.parentNode.childNodes[i];
-          if (sib.nodeName == el.nodeName) {
-            if (sib === el) {
-              sibIndex = sibCount;
-            }
-            sibCount++;
-          }
-        }
-        if (el.hasAttribute('id') && el.id != '') {
-          stack.unshift(el.nodeName.toLowerCase() + '#' + el.id);
-        } else if (sibCount > 1) {
-          stack.unshift(el.nodeName.toLowerCase());
-        } else {
-          stack.unshift(el.nodeName.toLowerCase());
-        }
-        el = el.parentNode;
-      }
-
-      const name = stack.slice(1).join(" > ");
-      const subName = name.substring(name.length > 40 ? name.length - 40 : 0, name.length);
-      return subName.substring(subName.indexOf(">")); // removes the html element
-    }
-
-    function handleToolBoxEvent(eventName, context) {
-      console.log("handle event", eventName)
-      switch (eventName) {
-        case "drag-drop":
-          break;
-        case "connect-data":
-          break;
-        case "show-config":
-          break;
-        case "select-parent":
-          var localTarget = context.target;
-          console.log("update element", localTarget);
-          if (localTarget && localTarget.parentElement && selectedTarget.parentElement !== document.body) {
-            selectedTarget.style.backgroundColor = previousTargetOriginalColor;
-            selectedTarget = localTarget.parentElement;
-            previousTargetOriginalColor = selectedTarget.style.backgroundColor;
-            selectedTarget.style.backgroundColor = "#ddd";
-          }
-          break;
-
-        default:
-          console.log("nothing to do for ", eventName)
-      }
-    }
 
     body.onclick = function (event) {
       if (event.target.tagName == "CANVAS" || (draggable && draggable.dragging)) {
@@ -485,21 +627,21 @@
       if (selectedTarget) {
         toolbox.style.backgroundColor = toolboxBackgroundColor;
         selectedTarget.style.backgroundColor = previousTargetOriginalColor;
+        onTargetUnselected(selectedTarget);
         selectedTarget = undefined;
         return false;
       }
       selectedTarget = event.target;
       selectedTarget.style.backgroundColor = "#ddd";
       toolbox.style.backgroundColor = "#ddd";
-      updateToolBoxPosition(selectedTarget);
+      onTargetSelected(selectedTarget);
       event.cancelBubble = true;
       return false
     };
 
     function updateToolBoxPosition(target) {
-      const m = window.m;
       if (toolbox) {
-        console.log("remove existing toolbox")
+        console.log("remove existing toolbox");
         document.body.removeChild(toolbox)
       }
       selectedTargetTagName = getDomPath(target);
@@ -519,13 +661,13 @@
       if (rect.top < defaultToolBoxWidth) {
         toolBoxSide = "bottom"
       }
-      if (toolBoxSide == "right" && rect.right > getDisplayWidth() - defaultToolBoxWidth) {
+      if (toolBoxSide === "right" && rect.right > getDisplayWidth() - defaultToolBoxWidth) {
         toolBoxSide = "left"
       }
-      if (toolBoxSide == "left" && rect.left < defaultToolBoxWidth) {
+      if (toolBoxSide === "left" && rect.left < defaultToolBoxWidth) {
         toolBoxSide = "bottom"
       }
-      if (toolBoxSide == "bottom" && rect.bottom > getCurrentScrollHeight() + getDisplayHeight()) {
+      if (toolBoxSide === "bottom" && rect.bottom > getCurrentScrollHeight() + getDisplayHeight()) {
         toolBoxSide = "0"
       }
       var pTop = 0, pLeft = 0;
@@ -586,14 +728,14 @@
               }, [
                 m("div", {class: "shard-toolbox"}, [
                   m("i", {
-                    class: "fa fa-arrows",
+                    class: "fa fa-wrench",
                     "aria-hidden": true,
                     "style": {
                       "cursor": "pointer",
                       "margin": "5px",
                     },
                     onclick: function (e) {
-                      handleToolBoxEvent("drag-drop", {
+                      handleToolBoxEvent("change-component", {
                         target: selectedTarget
                       })
                     }
@@ -645,6 +787,130 @@
                     }
                   }),
                 ])
+              ]
+          )
+        }
+      }
+    }
+
+    function buildHtmlFromPrefix(tagStruct, outerHtml, cssMap) {
+
+
+    }
+
+    function createComponentSelector(prefixComponents, fuzzyComponents, shardsMap, cssMap) {
+      const m = window.m;
+
+      var allComponents = prefixComponents.concat(fuzzyComponents)
+      var done = {};
+      return {
+        view: function () {
+          return m("div", {
+                style: {
+                  position: "fixed",
+                  top: 0 + "px",
+                  left: 0 + "px",
+                  height: "100vh",
+                  width: "300px",
+                  "z-index": 2099,
+                  "background-color": toolboxBackgroundColor,
+                  "color": "black",
+                  "text-size": "14px"
+                }
+              }, [
+                m("div", {class: "shard-toolbox"}, [
+                      m("i", {
+                        class: "fa fa-wrench",
+                        "aria-hidden": true,
+                        "style": {
+                          "cursor": "pointer",
+                          "margin": "5px",
+                        },
+                        onclick: function (e) {
+                          handleToolBoxEvent("change-component", {
+                            target: selectedTarget
+                          })
+                        }
+                      }),
+                      m("i", {
+                        class: "fa fa-arrows-alt",
+                        "aria-hidden": true,
+                        "style": {
+                          "cursor": "pointer",
+                          "margin": "5px",
+                        },
+                        onclick: function (e) {
+
+                          handleToolBoxEvent("select-parent", {
+                            target: selectedTarget
+                          })
+                        }
+                      }),
+                      m("i", {
+                        class: "fa  fa-plug",
+                        "aria-hidden": true,
+                        "style": {
+                          "cursor": "pointer",
+                          "margin": "5px",
+                        },
+                        onclick: function (e) {
+                          console.log("connect data");
+                          handleToolBoxEvent("connect-data", {
+                            target: selectedTarget
+                          })
+                        }
+                      }),
+                      m("span", {
+                        onclick: function (e) {
+                          console.log("update element", e, selectedTarget);
+                        }
+                      }, selectedTargetTagName),
+                      m("i", {
+                        class: "fa fa-cog",
+                        "aria-hidden": true,
+                        "style": {
+                          "cursor": "pointer",
+                          "margin": "5px",
+                        },
+                        onclick: function (e) {
+                          handleToolBoxEvent("show-config", {
+                            target: selectedTarget
+                          })
+                        }
+                      }),
+                      m("br"),
+
+                      m("div", {
+                            style: {
+                              "overflow-x": "scroll",
+                              "padding": "10px",
+                            }
+                          }, ...allComponents.map(function (prefix) {
+                            if (done[prefix]) {
+                              return null;
+                            }
+                            done[prefix] = true;
+                            var htmls = shardsMap[prefix];
+                            if (!htmls) {
+                              return null
+                            }
+                            return Object.keys(htmls).map(function (tagStruct) {
+                              console.log("Build html for ", tagStruct)
+                              var html = htmls[tagStruct];
+                              return m("iframe", {
+                                height: "100px",
+                                "width": "100%",
+                                "src": "data:text/html;charset=utf-8," + escape(buildHtmlFromPrefix(tagStruct, html[0], cssMap))
+                              })
+                            }).filter(function (e) {
+                              return !!e
+                            })
+                          }).filter(function (e) {
+                            return !!e
+                          })
+                      ),
+                    ]
+                )
               ]
           )
         }
