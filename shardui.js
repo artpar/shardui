@@ -62,7 +62,7 @@
       this.isFixed = isFixed || false;
       this.zIndex = zIndex || 9999;
       this.canvas = document.createElement('canvas');
-      document.body.appendChild(this.canvas);
+      document.body.append(this.canvas);
       this.init();
       this.draw();
       this.addEvent();
@@ -283,7 +283,7 @@
         var script = document.createElement('script');
         // script.type = 'text/javascript';
         script.src = src;
-        head.appendChild(script);
+        head.append(script);
         script.onload = resolve;
         script.onerror = reject;
 
@@ -302,7 +302,7 @@
         fileref.setAttribute("rel", "stylesheet");
         fileref.setAttribute("type", "text/css");
         fileref.setAttribute("href", src);
-        head.appendChild(fileref);
+        head.append(fileref);
         fileref.onload = resolve;
         fileref.onerror = reject;
       })
@@ -340,8 +340,8 @@
     var availableFuzzyComponents = [];
     var availablePrefixComponents = [];
     var availableShardsComponents = {};
+    var importedScripts = {};
     var cssMap = {};
-
 
     function getDisplayHeight() {
       return window.innerHeight || document.documentElement.clientHeight ||
@@ -435,6 +435,9 @@
           }
 
           toolbox.remove();
+          if (componentSelector) {
+            componentSelector.remove();
+          }
           radial.quit();
           radial = null;
           toolbox = null;
@@ -466,6 +469,8 @@
               var fuzzy = response.data.fuzzy;
               var shards = response.data.shards;
               var css = response.data.css;
+              var imported = response.data.imported;
+              importedScripts = imported;
               if (prefix) {
                 availablePrefixComponents.push(...prefix)
               }
@@ -492,18 +497,13 @@
               }
               console.log("prefix", prefix);
               console.log("fuzzy", fuzzy);
-              if (componentSelector) {
-                componentSelector.remove()
+              if (!componentSelector) {
+                // componentSelector.remove()
+                componentSelector = document.createElement("div");
+                document.body.append(componentSelector);
               }
-              const componentSelectorBody = createComponentSelector(availablePrefixComponents, availableFuzzyComponents, availableShardsComponents, cssMap);
-
-              var d = document.createElement("div");
-              m.mount(d, componentSelectorBody);
-              console.log("Rendered", d);
-              componentSelector = d.children[0];
-
-
-              document.body.appendChild(componentSelector);
+              const componentSelectorBody = createComponentSelector(availablePrefixComponents, availableFuzzyComponents, availableShardsComponents, cssMap, importedScripts);
+              m.mount(componentSelector, componentSelectorBody);
             })
           }
 
@@ -536,7 +536,9 @@
     }
 
     function onTargetUnselected(target) {
-
+      if (document.body.contains(componentSelector)) {
+        document.body.removeChild(componentSelector)
+      }
     }
 
 
@@ -594,6 +596,9 @@
       if (previousHoverTarget === ev.target || selectedTarget || ev.target.tagName === "BODY") {
         return;
       }
+      if (body.contains(componentSelector)) {
+        return
+      }
       if (previousHoverTarget) {
         previousHoverTarget.style.backgroundColor = previousTargetOriginalColor;
       }
@@ -617,9 +622,12 @@
       if (event.target.tagName == "CANVAS" || (draggable && draggable.dragging)) {
         return
       }
-      console.log("click target", event.target);
+      // console.log("click target", event.target);
       if (toolbox.contains(event.target)) {
         updateToolBoxPosition(selectedTarget);
+        return false;
+      }
+      if (document.body.contains(componentSelector) && componentSelector.contains(event.target)) {
         return false;
       }
 
@@ -641,19 +649,19 @@
 
     function updateToolBoxPosition(target) {
       if (toolbox) {
-        console.log("remove existing toolbox");
+        // console.log("remove existing toolbox");
         document.body.removeChild(toolbox)
       }
       selectedTargetTagName = getDomPath(target);
       var toolBoxContainer = createToolBox();
       var d = document.createElement("div");
       m.mount(d, toolBoxContainer);
-      console.log("Rendered", d);
+      // console.log("Rendered", d);
       toolbox = d.children[0];
       document.body.append(toolbox);
 
       var rect = target.getBoundingClientRect();
-      console.log("Element x,y", rect.top, rect.left, selectedTargetTagName);
+      // console.log("Element x,y", rect.top, rect.left, selectedTargetTagName);
       toolbox.style.display = "";
       var toolBoxSide = "top";
       var defaultToolBoxHeight = 400;
@@ -793,18 +801,141 @@
       }
     }
 
-    function buildHtmlFromPrefix(tagStruct, outerHtml, cssMap) {
+    function buildHtmlFromPrefix(tagStruct, outerHtml, cssMap, importedScripts) {
+      console.log("Build html ", tagStruct, outerHtml, cssMap);
+      var tags = tagStruct.split("<");
+      var container = document.createElement("div");
+      container.innerHTML = outerHtml;
+      container = container.childNodes[0];
+      if (container.style && container.style.display && container.style.display == "none") {
+        container.style.display = "";
+      }
+      if (container.style && container.style.top && container.style.top != "") {
+        container.style.top = "";
+      }
+      var hasBody = false;
+      var hasHtml = false;
+      var cssItems = [];
+      var head = document.createElement("head");
+      for (var i = tags.length - 2; i > 0; i--) {
+        var tagParts = tags[i].split(".");
+        var tagName = tagParts[0];
+        var className = tagParts[1];
+        var css = cssMap[className];
+
+        if (tagName == "body") {
+          hasBody = true;
+        } else if (tagName == "html") {
+          hasHtml = true;
+        }
+
+        var newElement = undefined;
+        if (tagName === ":text") {
+          continue;
+        }
+        newElement = document.createElement(tagName);
+        if (className && css) {
+          cssItems.push(tagName + "." + className + " {" + css + "}");
+          newElement.setAttribute("class", className);
+        }
+        newElement.append(container);
+        container = newElement
+      }
+
+      var cssNode = document.createElement("script");
+      cssNode.type = 'text/css';
+      cssNode.innerText = cssItems.join("");
+      if (!hasBody) {
+        var body = document.createElement("body");
+        body.append(container);
+        container = body;
+      }
+
+      if (!hasHtml) {
+        var html = document.createElement("html");
+        html.append(container);
+        container = html;
+      }
+      for (var i = 0; i < importedScripts.length; i++) {
+        var src = importedScripts[i];
+        var element = undefined;
+        if (src.indexOf(".css") > -1 || true) {
+          element = document.createElement("link");
+          element.href = src;
+          element.setAttribute("rel", "stylesheet");
+          element.setAttribute("type", "text/css")
+        } else if (src.indexOf(".js") > -1) {
+          element = document.createElement("script");
+          element.src = src;
+          element.setAttribute("type", "text/javascript")
+        }
+        if (element) {
+          head.append(element);
+        }
+      }
+
+      head.append(cssNode);
+
+      container.append(head);
+
+      console.log("Final html", container.outerHTML);
 
 
+      return container.outerHTML;
     }
 
-    function createComponentSelector(prefixComponents, fuzzyComponents, shardsMap, cssMap) {
+    function createComponentSelector(prefixComponents, fuzzyComponents, shardsMap, cssMap, importedScripts) {
       const m = window.m;
+      var pageNumber = 0;
+      var pageSize = 5;
 
-      var allComponents = prefixComponents.concat(fuzzyComponents)
+      var allComponents = prefixComponents;
+
+      for (var i = 0; i < fuzzyComponents.length; i++) {
+        var f = fuzzyComponents[i];
+        if (allComponents.indexOf(f) === -1) {
+          allComponents.push(f);
+        }
+      }
+
       var done = {};
+      var startPos = (pageNumber * pageSize);
+      var endPos = (pageNumber + 1) * pageSize;
+      console.log("start and end pos", startPos, endPos);
+      const htmlGenerator = function (prefix) {
+        // if (done[prefix]) {
+        //   return null;
+        // }
+        // done[prefix] = true;
+        var htmls = shardsMap[prefix];
+        if (!htmls) {
+          return null
+        }
+        console.log("Identified ", htmls.length, " htmls for ", prefix)
+        for (const htmlPath of htmls) {
+          console.log()
+        }
+        return Object.keys(htmls).map(function (tagStruct) {
+          console.log("Build html for ", tagStruct);
+          var html = htmls[tagStruct];
+          return m("iframe", {
+            height: "300px",
+            "width": "100%",
+            "border": "1px solid black",
+            "src": "data:text/html;charset=utf-8," + escape(buildHtmlFromPrefix(tagStruct, html[0], cssMap, importedScripts))
+          })
+        }).filter(function (e) {
+          return !!e
+        })
+      };
+      const skipNull = function (e) {
+        return !!e
+      };
+      var iframes = allComponents.slice(startPos, endPos).map(htmlGenerator).filter(skipNull);
       return {
         view: function () {
+
+
           return m("div", {
                 style: {
                   position: "fixed",
@@ -812,13 +943,14 @@
                   left: 0 + "px",
                   height: "100vh",
                   width: "300px",
+                  "overflow-y": "scroll",
                   "z-index": 2099,
                   "background-color": toolboxBackgroundColor,
                   "color": "black",
                   "text-size": "14px"
                 }
               }, [
-                m("div", {class: "shard-toolbox"}, [
+                m("div", {class: "component-toolbox"}, [
                       m("i", {
                         class: "fa fa-wrench",
                         "aria-hidden": true,
@@ -860,11 +992,6 @@
                           })
                         }
                       }),
-                      m("span", {
-                        onclick: function (e) {
-                          console.log("update element", e, selectedTarget);
-                        }
-                      }, selectedTargetTagName),
                       m("i", {
                         class: "fa fa-cog",
                         "aria-hidden": true,
@@ -879,36 +1006,66 @@
                         }
                       }),
                       m("br"),
-
+                      m("span", {
+                        onclick: function (e) {
+                          console.log("update element", e, selectedTarget);
+                        }
+                      }, selectedTargetTagName),
+                      m("br"),
+                      m("div", {
+                        style: {
+                          position: "fixed",
+                          top: 0,
+                          width: "290px",
+                          background: "white",
+                          "text-align": "center",
+                          "cursor": "pointer",
+                          height: "25px",
+                          left: "5px",
+                          right: 0,
+                        },
+                        onclick: function () {
+                          pageNumber = pageNumber - 1;
+                          console.log("Previous ", pageNumber);
+                          if (pageNumber < 0) {
+                            pageNumber = 0;
+                          }
+                        },
+                      }, "Previous"),
                       m("div", {
                             style: {
-                              "overflow-x": "scroll",
                               "padding": "10px",
                             }
-                          }, ...allComponents.map(function (prefix) {
-                            if (done[prefix]) {
-                              return null;
-                            }
-                            done[prefix] = true;
-                            var htmls = shardsMap[prefix];
-                            if (!htmls) {
-                              return null
-                            }
-                            return Object.keys(htmls).map(function (tagStruct) {
-                              console.log("Build html for ", tagStruct)
-                              var html = htmls[tagStruct];
-                              return m("iframe", {
-                                height: "100px",
-                                "width": "100%",
-                                "src": "data:text/html;charset=utf-8," + escape(buildHtmlFromPrefix(tagStruct, html[0], cssMap))
-                              })
-                            }).filter(function (e) {
-                              return !!e
-                            })
-                          }).filter(function (e) {
-                            return !!e
-                          })
+                          }, [
+                            ...iframes,
+                          ]
                       ),
+                      m("div", {
+                        style: {
+                          position: "fixed",
+                          bottom: 0,
+                          width: "290px",
+                          "text-align": "center",
+                          "cursor": "pointer",
+                          background: "white",
+                          height: "25px",
+                          left: "5px",
+                          right: 0,
+                        },
+                        onclick: function () {
+                          pageNumber = pageNumber + 1;
+                          console.log("Next ", pageNumber);
+                          if (pageNumber > (allComponents.length / pageSize) + 1) {
+                            pageNumber = allComponents.length / pageSize - 1;
+                          }
+                          iframes.splice(0, iframes.length);
+                          startPos = (pageNumber * pageSize) + 1;
+                          endPos = (pageNumber + 1) * pageSize;
+
+                          iframes.push(...allComponents.slice(startPos, endPos).map(htmlGenerator).filter(skipNull))
+
+                        },
+                      }, "Next")
                     ]
                 )
               ]
